@@ -237,7 +237,7 @@ with tabs[2]:
                     cursor = conn.cursor()
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS viajes (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT, clave_descarga TEXT, id_jornada INTEGER, consecutivo TEXT,
+                            id SERIAL PRIMARY KEY, clave_descarga TEXT, id_jornada INTEGER, consecutivo TEXT,
                             placa TEXT, estado TEXT,
                             hora_inicio_cargue TEXT, hora_fin_cargue TEXT, hora_inicio_transito TEXT,
                             hora_llegada_planta TEXT, hora_ingreso_planta TEXT, hora_inicio_descarga TEXT, hora_fin_descarga TEXT)
@@ -346,7 +346,7 @@ with tabs[3]:
                 cursor = conn.cursor()
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS temperaturas (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id SERIAL PRIMARY KEY,
                         hora_medicion TEXT,
                         bodega TEXT,
                         especie TEXT,
