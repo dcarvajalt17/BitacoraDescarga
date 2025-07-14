@@ -1,12 +1,45 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
+import psycopg2
+import os
+from dotenv import load_dotenv
 
-DB_PATH = "bitacora_descarga.db"
+# Cargar variables de entorno
+load_dotenv()
+
+# ==== CSS para botón flotante ====
+st.markdown("""
+<style>
+.fab {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    background-color: #0e1117;
+    color: white;
+    border-radius: 50%;
+    padding: 16px 20px;
+    font-size: 24px;
+    box-shadow: 0px 4px 12px rgba(0,0,0,0.2);
+    cursor: pointer;
+    z-index: 9999;
+    text-align: center;
+}
+.fab:hover {
+    background-color: #202431;
+}
+</style>
+<a href="#registrar-descarga" class="fab">＋</a>
+""", unsafe_allow_html=True)
 
 def connect_db():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD")
+    )
 
 def resumen_viajes_por_fecha():
     conn = connect_db()
@@ -14,28 +47,14 @@ def resumen_viajes_por_fecha():
     df_viajes = pd.read_sql_query("SELECT * FROM viajes", conn)
     df_descargas = pd.read_sql_query("SELECT * FROM descargas", conn)
     conn.close()
-
-    # Unir viajes con jornadas
     df = df_viajes.merge(df_jornadas, left_on="id_jornada", right_on="id", suffixes=("_viaje", "_jornada"))
-
-    # Aseguramos que la columna se llame correctamente
     if "clave_descarga" not in df.columns:
-        # Buscar una columna parecida (por seguridad, revisar sufijos)
         posibles = [col for col in df.columns if "clave_descarga" in col]
         if posibles:
             df.rename(columns={posibles[0]: "clave_descarga"}, inplace=True)
-
-    # Ahora sí hacemos el merge con descargas
     df = df.merge(df_descargas, left_on="clave_descarga", right_on="clave", suffixes=("", "_descarga"))
-
-
-    # Filtramos solo los finalizados
     df = df[df["estado"] == "FINALIZADO"]
-
     return df
-
-
-
 
 def calcular_diferencias(df):
     df = df.copy()
@@ -51,7 +70,32 @@ def calcular_diferencias(df):
 st.set_page_config("Bitácora Barco", layout="wide")
 st.title("🚢 Bitácora de Descarga de Barco")
 
-tabs = st.tabs(["🔧 Crear Descarga", "📅 Jornadas", "🚛 Viajes", "🌡️ Temperaturas", "📊 Resumen", "📤 Exportar"])
+# ==== TABS ====
+tabs = st.tabs(["🔧 Crear Descarga", "�헕️ Jornadas", "🚛 Viajes", "🌡️ Temperaturas", "📊 Resumen", "📄 Exportar"])
+
+# ==== ID para scroll desde botón flotante ====
+with tabs[0]:
+    st.subheader("Registrar nueva descarga")
+    st.markdown('<div id="registrar-descarga"></div>', unsafe_allow_html=True)
+    barco = st.text_input("Nombre del barco", key="barco_input")
+    lote = st.text_input("Lote", key="lote_input")
+    fecha = st.date_input("Fecha", value=datetime.today(), key="fecha_input")
+    if st.button("Crear descarga", key="crear_descarga_btn"):
+        if not barco or not lote:
+            st.warning("⚠️ Debe ingresar el nombre del barco y el lote.")
+        else:
+            clave = f"{barco.upper()}-{fecha.strftime('%Y%m%d')}-{lote}"
+            conn = connect_db()
+            cursor = conn.cursor()
+            cursor.execute("CREATE TABLE IF NOT EXISTS descargas (clave TEXT PRIMARY KEY, barco TEXT, lote TEXT, fecha TEXT)")
+            cursor.execute("""
+                INSERT INTO descargas (clave, barco, lote, fecha)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (clave) DO NOTHING
+            """, (clave, barco, lote, str(fecha)))
+            conn.commit()
+            conn.close()
+            st.success(f"✅ Descarga registrada con clave: {clave}")
 
 # ======= TAB 1: Crear Descarga =======
 with tabs[0]:
@@ -67,58 +111,71 @@ with tabs[0]:
             conn = connect_db()
             cursor = conn.cursor()
             cursor.execute("CREATE TABLE IF NOT EXISTS descargas (clave TEXT PRIMARY KEY, barco TEXT, lote TEXT, fecha TEXT)")
-            cursor.execute("INSERT OR IGNORE INTO descargas (clave, barco, lote, fecha) VALUES (?, ?, ?, ?)", 
-                           (clave, barco, lote, str(fecha)))
+            cursor.execute("""
+                                INSERT INTO descargas (clave, barco, lote, fecha)
+                                VALUES (%s, %s, %s, %s)
+                                ON CONFLICT (clave) DO NOTHING
+                            """, (clave, barco, lote, str(fecha)))
+
             conn.commit()
             conn.close()
             st.success(f"✅ Descarga registrada con clave: {clave}")
 
 # ======= TAB 2: Jornadas =======
 with tabs[1]:
-    st.subheader("Jornadas")
-    conn = connect_db()
-    descargas = pd.read_sql_query("SELECT * FROM descargas", conn)
-    conn.close()
-    if not descargas.empty:
-        clave_sel = st.selectbox("Selecciona descarga", descargas["clave"].tolist())
-        if st.button("Iniciar jornada para descarga"):
+        st.subheader("Jornadas")
+        conn = connect_db()
+        descargas = pd.read_sql_query("SELECT * FROM descargas", conn)
+        conn.close()
+
+        if not descargas.empty:
+            clave_sel = st.selectbox("Selecciona descarga", descargas["clave"].tolist(), key="clave_descarga_jornada")
+
+        if st.button("Iniciar jornada para descarga", key="iniciar_jornada_btn"):
             hora_inicio = datetime.now().strftime("%H:%M:%S")
             conn = connect_db()
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS jornadas (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     clave_descarga TEXT,
                     fecha TEXT,
                     hora_inicio TEXT,
                     hora_fin TEXT
                 )
             """)
-            cursor.execute("INSERT INTO jornadas (clave_descarga, fecha, hora_inicio) VALUES (?, ?, ?)", 
-                           (clave_sel, str(datetime.today().date()), hora_inicio))
+            cursor.execute("""
+                INSERT INTO jornadas (clave_descarga, fecha, hora_inicio)
+                VALUES (%s, %s, %s)
+            """, (clave_sel, str(datetime.today().date()), hora_inicio))
             conn.commit()
             conn.close()
-            st.success("✅ Jornada iniciada")
+            st.success("✅ Jornada iniciada.")
+            st.experimental_rerun()
+
         conn = connect_db()
-        df_jornadas = pd.read_sql_query("SELECT * FROM jornadas WHERE clave_descarga = ?", conn, params=(clave_sel,))
+        df_jornadas = pd.read_sql_query("SELECT * FROM jornadas WHERE clave_descarga = %s ORDER BY id DESC", conn, params=(clave_sel,))
         conn.close()
+
         st.dataframe(df_jornadas)
+
         if not df_jornadas.empty:
-            ultima_jornada = df_jornadas.sort_values(by="id", ascending=False).iloc[0]
-            if pd.isna(ultima_jornada["hora_fin"]):
-                if st.button("🛑 Finalizar jornada actual"):
+            jornada_abierta = df_jornadas[df_jornadas["hora_fin"].isna()]
+            if not jornada_abierta.empty:
+                jornada_id = jornada_abierta.iloc[0]["id"]
+                if st.button("🛑 Finalizar jornada actual", key="finalizar_jornada_btn"):
                     conn = connect_db()
                     cursor = conn.cursor()
-                    cursor.execute("UPDATE jornadas SET hora_fin = ? WHERE id = ?", (datetime.now().strftime("%H:%M:%S"), ultima_jornada["id"]))
+                    hora_fin = datetime.now().strftime("%H:%M:%S")
+                    cursor.execute("UPDATE jornadas SET hora_fin = %s WHERE id = %s", (hora_fin, jornada_id))
                     conn.commit()
                     conn.close()
                     st.success("✅ Jornada finalizada.")
-                    st.rerun()
-
+                    st.experimental_rerun()
             else:
-                st.info("La jornada más reciente ya fue finalizada.")
-    else:
-        st.info("No hay descargas registradas.")
+                st.info("ℹ️ No hay jornadas abiertas para esta descarga.")
+        else:
+            st.warning("No hay descargas registradas.")
 
 # ======= TAB 3: Viajes =======
 with tabs[2]:
@@ -127,51 +184,35 @@ with tabs[2]:
 
     # Cargamos jornadas aún abiertas
     jornadas_abiertas = pd.read_sql_query("SELECT * FROM jornadas WHERE hora_fin IS NULL", conn)
+    descargas = pd.read_sql_query("SELECT * FROM descargas", conn)
+    conn.close()
 
     if not jornadas_abiertas.empty:
-        # Traer la tabla descargas para obtener barco y lote
-        descargas = pd.read_sql_query("SELECT * FROM descargas", conn)
-
         # Unir jornadas abiertas con descargas para mostrar más información
         jornadas_detalle = jornadas_abiertas.merge(descargas, left_on="clave_descarga", right_on="clave")
-        
-        if "fecha_y" in jornadas_detalle.columns:
-            jornadas_detalle.rename(columns={"fecha_y": "fecha_descarga"}, inplace=True)
-        elif "fecha" in jornadas_detalle.columns:
-            jornadas_detalle.rename(columns={"fecha": "fecha_descarga"}, inplace=True)
+
+        # Renombrar columnas para mayor claridad
         jornadas_detalle.rename(columns={
-    "id_x": "id_jornada",
-    "barco": "barco_descarga",
-    "lote": "lote_descarga",
-    "fecha_y": "fecha_descarga"
-}, inplace=True)
+            "id": "id_jornada",
+            "barco": "barco_descarga",
+            "lote": "lote_descarga",
+            "fecha": "fecha_descarga"
+        }, inplace=True)
 
-
-
-        # Crear un selector con info del barco, lote y fecha
+        # Crear columna para selector
         jornadas_detalle["label"] = jornadas_detalle.apply(
-    lambda row: f"{row['barco_descarga']} - Lote {row['lote_descarga']} ({row['fecha_descarga']}) [Jornada ID {row['id_jornada']}]",
-    axis=1
-)
-
-
+            lambda row: f"{row['barco_descarga']} - Lote {row['lote_descarga']} ({row['fecha_descarga']}) [Jornada ID {row['id_jornada']}]",
+            axis=1
+        )
 
         seleccion = st.selectbox("Selecciona una jornada abierta (por barco/lote)", jornadas_detalle["label"])
         jornada_id = jornadas_detalle[jornadas_detalle["label"] == seleccion]["id_jornada"].values[0]
         clave_desc = jornadas_detalle[jornadas_detalle["label"] == seleccion]["clave_descarga"].values[0]
 
-
-    conn.close()
-
-    if not jornadas_detalle.empty:
-        jornada_id = jornadas_detalle[jornadas_detalle["label"] == seleccion]["id_jornada"].values[0]
-        clave_desc = jornadas_detalle[jornadas_detalle["label"] == seleccion]["clave_descarga"].values[0]
-
-
         def get_num_viajes_en_estado(jornada_id, estado):
             conn = connect_db()
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM viajes WHERE id_jornada = ? AND estado = ?", (jornada_id, estado))
+            cursor.execute("SELECT COUNT(*) FROM viajes WHERE id_jornada = %s AND estado = %s", (jornada_id, estado))
             count = cursor.fetchone()[0]
             conn.close()
             return count
@@ -179,7 +220,7 @@ with tabs[2]:
         def placa_ya_activa(jornada_id, placa):
             conn = connect_db()
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM viajes WHERE id_jornada = ? AND placa = ? AND estado != 'FINALIZADO'", (jornada_id, placa))
+            cursor.execute("SELECT COUNT(*) FROM viajes WHERE id_jornada = %s AND placa = %s AND estado != 'FINALIZADO'", (jornada_id, placa))
             exists = cursor.fetchone()[0] > 0
             conn.close()
             return exists
@@ -201,21 +242,25 @@ with tabs[2]:
                             hora_inicio_cargue TEXT, hora_fin_cargue TEXT, hora_inicio_transito TEXT,
                             hora_llegada_planta TEXT, hora_ingreso_planta TEXT, hora_inicio_descarga TEXT, hora_fin_descarga TEXT)
                     """)
-                    cursor.execute("SELECT COUNT(*) FROM viajes WHERE id_jornada = ?", (jornada_id,))
+                    cursor.execute("SELECT COUNT(*) FROM viajes WHERE id_jornada = %s", (jornada_id,))
                     count = cursor.fetchone()[0] + 1
                     consecutivo = f"V{count:03d}"
                     hora_inicio = datetime.now().strftime("%H:%M:%S")
-                    cursor.execute("INSERT INTO viajes (clave_descarga, id_jornada, consecutivo, placa, estado, hora_inicio_cargue) VALUES (?, ?, ?, ?, 'CARGUE', ?)",
-                                   (clave_desc, jornada_id, consecutivo, placa, hora_inicio))
+                    cursor.execute("""
+                        INSERT INTO viajes (clave_descarga, id_jornada, consecutivo, placa, estado, hora_inicio_cargue)
+                        VALUES (%s, %s, %s, %s, 'CARGUE', %s)
+                    """, (clave_desc, jornada_id, consecutivo, placa, hora_inicio))
                     conn.commit()
                     conn.close()
                     st.success("✅ Viaje creado.")
         else:
             st.warning("🚧 Solo se permiten 2 viajes en estado CARGUE simultáneamente.")
 
+        # Mostrar viajes activos
         conn = connect_db()
-        df = pd.read_sql_query("SELECT * FROM viajes WHERE id_jornada = ? AND estado != 'FINALIZADO'", conn, params=(jornada_id,))
+        df = pd.read_sql_query("SELECT * FROM viajes WHERE id_jornada = %s AND estado != 'FINALIZADO'", conn, params=(jornada_id,))
         conn.close()
+
         for _, row in df.iterrows():
             st.markdown(f"---\n**{row['consecutivo']} - {row['placa']} - Estado: {row['estado']}**")
             col1, _ = st.columns(2)
@@ -224,7 +269,7 @@ with tabs[2]:
                     conn = connect_db()
                     cursor = conn.cursor()
                     hora = datetime.now().strftime("%H:%M:%S")
-                    cursor.execute("UPDATE viajes SET estado = ?, hora_fin_cargue = ?, hora_inicio_transito = ? WHERE id = ?", ("TRANSITO", hora, hora, row['id']))
+                    cursor.execute("UPDATE viajes SET estado = %s, hora_fin_cargue = %s, hora_inicio_transito = %s WHERE id = %s", ("TRANSITO", hora, hora, row['id']))
                     conn.commit()
                     conn.close()
             elif row['estado'] == "TRANSITO":
@@ -232,7 +277,7 @@ with tabs[2]:
                     conn = connect_db()
                     cursor = conn.cursor()
                     hora = datetime.now().strftime("%H:%M:%S")
-                    cursor.execute("UPDATE viajes SET estado = ?, hora_llegada_planta = ? WHERE id = ?", ("EN ESPERA", hora, row['id']))
+                    cursor.execute("UPDATE viajes SET estado = %s, hora_llegada_planta = %s WHERE id = %s", ("EN ESPERA", hora, row['id']))
                     conn.commit()
                     conn.close()
             elif row['estado'] == "EN ESPERA":
@@ -240,7 +285,7 @@ with tabs[2]:
                     conn = connect_db()
                     cursor = conn.cursor()
                     hora = datetime.now().strftime("%H:%M:%S")
-                    cursor.execute("UPDATE viajes SET estado = ?, hora_ingreso_planta = ? WHERE id = ?", ("DESCARGA", hora, row['id']))
+                    cursor.execute("UPDATE viajes SET estado = %s, hora_ingreso_planta = %s WHERE id = %s", ("DESCARGA", hora, row['id']))
                     conn.commit()
                     conn.close()
             elif row['estado'] == "DESCARGA":
@@ -248,7 +293,7 @@ with tabs[2]:
                     conn = connect_db()
                     cursor = conn.cursor()
                     hora = datetime.now().strftime("%H:%M:%S")
-                    cursor.execute("UPDATE viajes SET estado = ?, hora_inicio_descarga = ? WHERE id = ?", ("EN DESCARGA", hora, row['id']))
+                    cursor.execute("UPDATE viajes SET estado = %s, hora_inicio_descarga = %s WHERE id = %s", ("EN DESCARGA", hora, row['id']))
                     conn.commit()
                     conn.close()
             elif row['estado'] == "EN DESCARGA":
@@ -256,11 +301,15 @@ with tabs[2]:
                     conn = connect_db()
                     cursor = conn.cursor()
                     hora = datetime.now().strftime("%H:%M:%S")
-                    cursor.execute("UPDATE viajes SET estado = ?, hora_fin_descarga = ? WHERE id = ?", ("FINALIZADO", hora, row['id']))
+                    cursor.execute("UPDATE viajes SET estado = %s, hora_fin_descarga = %s WHERE id = %s", ("FINALIZADO", hora, row['id']))
                     conn.commit()
                     conn.close()
 
         st.dataframe(df)
+
+    else:
+        st.info("No hay jornadas abiertas actualmente.")
+
         
 with tabs[3]:
     st.subheader("🌡️ Registro de Temperaturas")
@@ -278,7 +327,7 @@ with tabs[3]:
         clave_sel = st.selectbox("Selecciona la descarga", descargas["clave"].tolist())
 
         conn = connect_db()
-        jornadas = pd.read_sql_query("SELECT * FROM jornadas WHERE clave_descarga = ?", conn, params=(clave_sel,))
+        jornadas = pd.read_sql_query("SELECT * FROM jornadas WHERE clave_descarga = %s", conn, params=(clave_sel,))
         conn.close()
 
         if jornadas.empty:
@@ -311,8 +360,7 @@ with tabs[3]:
                 cursor.execute("""
                     INSERT INTO temperaturas 
                     (hora_medicion, bodega, especie, talla, temperatura, lugar, clave_descarga, id_jornada)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (hora.strftime("%H:%M:%S"), bodega, especie, talla, temperatura, lugar, clave_sel, jornada_id))
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""", (hora.strftime("%H:%M:%S"), bodega, especie, talla, temperatura, lugar, clave_sel, jornada_id))
                 conn.commit()
                 conn.close()
                 st.success("✅ Registro guardado exitosamente.")
@@ -382,3 +430,10 @@ with tabs[5]:
     with open(filename, "rb") as f:
         st.download_button("📥 Descargar Excel", f, file_name=filename)
 
+if __name__ == "__main__":
+    try:
+        conn = connect_db()
+        print("✅ Conexión exitosa a Supabase")
+        conn.close()
+    except Exception as e:
+        print("❌ Error de conexión:", e)
